@@ -156,36 +156,53 @@ const App: React.FC = () => {
     }
   };
 
-  // PASO 2 MEJORADO: Renderizar DOCX -> PDF (Usa automáticamente el DOCX del Paso 1)
+  // PASO 2 MEJORADO Y CORREGIDO: Renderizar DOCX -> PDF
   const handleStep2 = async () => {
-      // Usar automáticamente el DOCX generado en Paso 1
       if (!docxBlob) {
           alert("No hay archivo DOCX disponible. Por favor completa primero el Paso 1.");
           return;
       }
 
-      if (!docxContainerRef.current) return;
+      if (!docxContainerRef.current) {
+          alert("Error: Contenedor de renderizado no encontrado.");
+          return;
+      }
 
       setProcessingStep2(true);
-      setStatusMessage("Renderizando documento...");
+      setStatusMessage("Preparando documento...");
 
       try {
           const docx = (window as any).docx;
           const html2canvas = (window as any).html2canvas;
           const { jsPDF } = (window as any).jspdf;
 
-          if (!docx) throw new Error("Error: Librería docx-preview no encontrada. Verifique las dependencias.");
+          if (!docx) throw new Error("Error: Librería docx-preview no encontrada.");
           if (!html2canvas || !jsPDF) throw new Error("Error: Librerías de PDF no encontradas.");
 
           // 1. Limpiar contenedor
           docxContainerRef.current.innerHTML = "";
           
-          // 2. Convertir Blob a ArrayBuffer
+          // 2. HACER VISIBLE EL CONTENEDOR TEMPORALMENTE (FIX CRITICO)
+          const container = docxContainerRef.current.parentElement as HTMLElement;
+          if (container) {
+              container.style.position = 'fixed';
+              container.style.left = '-9999px'; // Fuera de vista pero visible para el DOM
+              container.style.top = '0';
+              container.style.width = '210mm'; // A4 width
+              container.style.zIndex = '9999';
+              container.style.opacity = '1'; // VISIBLE
+              container.style.backgroundColor = 'white';
+          }
+          
+          // 3. Convertir Blob a ArrayBuffer
           const arrayBuffer = await docxBlob.arrayBuffer();
           
-          setStatusMessage("Procesando contenido del documento...");
+          setStatusMessage("Renderizando contenido del documento...");
           
-          // 3. Renderizar con configuración OPTIMIZADA
+          console.log('Iniciando renderizado DOCX...');
+          console.log('Tamaño del blob:', docxBlob.size, 'bytes');
+          
+          // 4. Renderizar con configuración OPTIMIZADA
           await docx.renderAsync(arrayBuffer, docxContainerRef.current, null, {
              className: "docx-viewer",
              inWrapper: true,
@@ -194,43 +211,63 @@ const App: React.FC = () => {
              ignoreFonts: false,
              breakPages: true,
              useBase64URL: true,
-             experimental: true, // Características experimentales
+             experimental: true,
              trimXmlDeclaration: true,
+             debug: true // Activar debug
           });
 
-          setStatusMessage("Esperando carga de recursos (fuentes e imágenes)...");
+          console.log('Renderizado completado, esperando recursos...');
+          setStatusMessage("Esperando carga de fuentes e imágenes...");
           
-          // 4. TIMEOUT AUMENTADO para asegurar carga completa
-          await new Promise(resolve => setTimeout(resolve, 3500));
+          // 5. TIMEOUT AUMENTADO
+          await new Promise(resolve => setTimeout(resolve, 4000));
 
-          // 5. Preparar elemento objetivo
+          // 6. Verificar que el contenido se haya renderizado
           const targetElement = docxContainerRef.current.querySelector('.docx-wrapper') as HTMLElement || docxContainerRef.current;
+          
+          console.log('Elemento objetivo:', targetElement);
+          console.log('Contenido HTML length:', targetElement.innerHTML.length);
+          console.log('Hijos del elemento:', targetElement.children.length);
+          
+          if (targetElement.innerHTML.length < 100) {
+              throw new Error('El documento no se renderizó correctamente. Contenido vacío o incompleto.');
+          }
           
           // Forzar estilos de impresión
           targetElement.style.background = "white";
-          targetElement.style.padding = "0";
+          targetElement.style.padding = "20px";
           targetElement.style.margin = "0";
+          targetElement.style.width = "210mm";
+          targetElement.style.minHeight = "297mm";
 
-          setStatusMessage("Capturando documento de alta resolución...");
+          setStatusMessage("Capturando documento en alta resolución...");
 
-          // 6. Capturar con ALTA CALIDAD
+          // 7. Capturar con ALTA CALIDAD
+          console.log('Iniciando captura con html2canvas...');
           const canvas = await html2canvas(targetElement, {
-              scale: 3, // Escala aumentada para mejor calidad
+              scale: 2.5,
               useCORS: true,
               allowTaint: false,
               backgroundColor: '#ffffff',
-              logging: false,
+              logging: true, // Activar logs
               imageTimeout: 15000,
               removeContainer: false,
-              windowWidth: 800,
-              windowHeight: 1131,
+              windowWidth: 794, // 210mm en pixels (96 DPI)
+              windowHeight: 1123, // 297mm en pixels
           });
 
-          const imgData = canvas.toDataURL('image/jpeg', 0.98); // Máxima calidad
+          console.log('Canvas generado:', canvas.width, 'x', canvas.height);
           
-          setStatusMessage("Generando PDF final...");
+          // Verificar que el canvas tenga contenido
+          if (canvas.width === 0 || canvas.height === 0) {
+              throw new Error('Error al capturar el documento: canvas vacío.');
+          }
 
-          // 7. Crear PDF con dimensiones exactas A4
+          const imgData = canvas.toDataURL('image/jpeg', 0.95);
+          
+          setStatusMessage("Generando archivo PDF...");
+
+          // 8. Crear PDF
           const pdf = new jsPDF({
               orientation: 'portrait',
               unit: 'mm',
@@ -245,9 +282,10 @@ const App: React.FC = () => {
           let imgWidth = pageWidth;
           let imgHeight = pageWidth / canvasRatio;
           
-          // 8. SOPORTE MULTI-PÁGINA AUTOMÁTICO
+          // 9. SOPORTE MULTI-PÁGINA
           if (imgHeight > pageHeight) {
               const pagesNeeded = Math.ceil(imgHeight / pageHeight);
+              console.log('Documento multi-página:', pagesNeeded, 'páginas');
               
               for (let i = 0; i < pagesNeeded; i++) {
                   if (i > 0) pdf.addPage();
@@ -255,24 +293,27 @@ const App: React.FC = () => {
                   const sourceY = i * (canvas.height / pagesNeeded);
                   const sourceHeight = canvas.height / pagesNeeded;
                   
-                  // Canvas temporal para cada página
                   const tempCanvas = document.createElement('canvas');
                   tempCanvas.width = canvas.width;
                   tempCanvas.height = sourceHeight;
                   const tempCtx = tempCanvas.getContext('2d');
                   
                   if (tempCtx) {
+                      tempCtx.fillStyle = 'white';
+                      tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
                       tempCtx.drawImage(canvas, 0, sourceY, canvas.width, sourceHeight, 0, 0, canvas.width, sourceHeight);
-                      const pageImgData = tempCanvas.toDataURL('image/jpeg', 0.98);
+                      const pageImgData = tempCanvas.toDataURL('image/jpeg', 0.95);
                       pdf.addImage(pageImgData, 'JPEG', 0, 0, pageWidth, pageHeight);
                   }
               }
           } else {
-              // Una sola página
+              console.log('Documento de una sola página');
               pdf.addImage(imgData, 'JPEG', 0, 0, imgWidth, imgHeight);
           }
           
           const pdfBlob = pdf.output('blob');
+          console.log('PDF generado:', pdfBlob.size, 'bytes');
+          
           setPdfNoQrBlob(pdfBlob);
 
           const saveAs = (window as any).saveAs;
@@ -281,13 +322,31 @@ const App: React.FC = () => {
           setStep2Done(true);
           setStatusMessage("✓ PDF generado exitosamente");
           
-          // Limpiar mensaje después de 2 segundos
+          // 10. OCULTAR CONTENEDOR NUEVAMENTE
+          if (container) {
+              container.style.position = 'absolute';
+              container.style.left = '0';
+              container.style.top = '0';
+              container.style.zIndex = '-100';
+              container.style.opacity = '0';
+          }
+          
           setTimeout(() => setStatusMessage(""), 2000);
 
       } catch (e: any) {
-          console.error(e);
+          console.error('Error completo:', e);
           alert("Error al generar PDF desde DOCX: " + e.message);
           setStatusMessage("");
+          
+          // Asegurarse de ocultar el contenedor en caso de error
+          const container = docxContainerRef.current?.parentElement as HTMLElement;
+          if (container) {
+              container.style.position = 'absolute';
+              container.style.left = '0';
+              container.style.top = '0';
+              container.style.zIndex = '-100';
+              container.style.opacity = '0';
+          }
       } finally {
           setProcessingStep2(false);
       }
@@ -318,7 +377,7 @@ const App: React.FC = () => {
           const saveAs = (window as any).saveAs;
           if(saveAs) saveAs(finalBlob, `3_ENMICADO_FINAL_QR_${data.placa || 'TIV'}.pdf`);
 
-          setStatusMessage("✓ Proceso completado");
+          setStatusMessage("✓ Proceso completado exitosamente");
           setTimeout(() => setStatusMessage(""), 2000);
 
       } catch (e: any) {
@@ -351,18 +410,20 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800 font-sans">
       
-      {/* HIDDEN DOCX RENDERER CONTAINER */}
+      {/* HIDDEN DOCX RENDERER CONTAINER - MEJORADO */}
       <div 
         id="docx-hidden-container"
         style={{ 
-            position: 'absolute', 
-            left: 0, 
-            top: 0, 
-            width: '800px',
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            width: '210mm',
+            minHeight: '297mm',
             zIndex: -100,
             opacity: 0,
-            overflow: 'hidden',
-            backgroundColor: 'white'
+            overflow: 'visible',
+            backgroundColor: 'white',
+            padding: '20px'
         }}
       >
          <div ref={docxContainerRef}></div>
@@ -598,7 +659,7 @@ const App: React.FC = () => {
                                             {step1Done && docxBlob && (
                                                 <div className="mt-2 flex items-center gap-2 text-xs bg-green-50 border border-green-200 rounded p-2">
                                                     <CheckCircle className="h-4 w-4 text-green-600" />
-                                                    <span className="text-green-700 font-medium">Archivo DOCX listo para conversión</span>
+                                                    <span className="text-green-700 font-medium">DOCX cargado ({(docxBlob.size / 1024).toFixed(1)} KB)</span>
                                                 </div>
                                             )}
                                         </div>
