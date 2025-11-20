@@ -6,7 +6,7 @@ import { generateFilledDocument } from './services/documentService';
 import { TIVData, EMPTY_TIV_DATA } from './types';
 import { Spinner } from './components/Spinner';
 import { DataField } from './components/DataField';
-import { Upload, FileText, CheckCircle, AlertCircle, Scan, Cpu, QrCode, FileType, Search, FileDown, RefreshCw } from 'lucide-react';
+import { Upload, FileText, CheckCircle, AlertCircle, Scan, Cpu, QrCode, FileType, Search, FileDown } from 'lucide-react';
 
 const App: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
@@ -28,7 +28,6 @@ const App: React.FC = () => {
   const [step2Done, setStep2Done] = useState(false);
   
   const [docxBlob, setDocxBlob] = useState<Blob | null>(null);
-  const [manualDocxFile, setManualDocxFile] = useState<File | null>(null);
   const [pdfNoQrBlob, setPdfNoQrBlob] = useState<Blob | null>(null);
 
   // Module statuses
@@ -37,7 +36,6 @@ const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const templateInputRef = useRef<HTMLInputElement>(null);
-  const manualDocxInputRef = useRef<HTMLInputElement>(null);
   
   // Hidden container for PDF generation
   const docxContainerRef = useRef<HTMLDivElement>(null);
@@ -66,17 +64,6 @@ const App: React.FC = () => {
       setStep2Done(false);
       setDocxBlob(null);
       setPdfNoQrBlob(null);
-    }
-  };
-
-  const handleManualDocxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-        const selectedFile = e.target.files[0];
-        if (!selectedFile.name.endsWith('.docx')) {
-            alert('Por favor selecciona un archivo Word (.docx) válido.');
-            return;
-        }
-        setManualDocxFile(selectedFile);
     }
   };
   
@@ -160,7 +147,6 @@ const App: React.FC = () => {
         setStep1Done(true);
         // Reset step 2/3 if regenerating step 1
         setStep2Done(false);
-        setManualDocxFile(null);
         setPdfNoQrBlob(null);
     } catch (e) {
         console.error(e);
@@ -170,18 +156,18 @@ const App: React.FC = () => {
     }
   };
 
-  // PASO 2: Renderizar DOCX (Auto o Manual) -> PDF
+  // PASO 2 MEJORADO: Renderizar DOCX -> PDF (Usa automáticamente el DOCX del Paso 1)
   const handleStep2 = async () => {
-      const fileToConvert = manualDocxFile || docxBlob;
-
-      if (!fileToConvert) {
-          alert("No hay archivo DOCX para convertir. Por favor completa el Paso 1 o sube un archivo manualmente.");
+      // Usar automáticamente el DOCX generado en Paso 1
+      if (!docxBlob) {
+          alert("No hay archivo DOCX disponible. Por favor completa primero el Paso 1.");
           return;
       }
 
       if (!docxContainerRef.current) return;
 
       setProcessingStep2(true);
+      setStatusMessage("Renderizando documento...");
 
       try {
           const docx = (window as any).docx;
@@ -191,64 +177,117 @@ const App: React.FC = () => {
           if (!docx) throw new Error("Error: Librería docx-preview no encontrada. Verifique las dependencias.");
           if (!html2canvas || !jsPDF) throw new Error("Error: Librerías de PDF no encontradas.");
 
-          // 1. Render DOCX to hidden container
+          // 1. Limpiar contenedor
           docxContainerRef.current.innerHTML = "";
           
-          // Convert Blob/File to ArrayBuffer for docx-preview
-          const arrayBuffer = await fileToConvert.arrayBuffer();
+          // 2. Convertir Blob a ArrayBuffer
+          const arrayBuffer = await docxBlob.arrayBuffer();
           
-          // Render Async using docx-preview
+          setStatusMessage("Procesando contenido del documento...");
+          
+          // 3. Renderizar con configuración OPTIMIZADA
           await docx.renderAsync(arrayBuffer, docxContainerRef.current, null, {
              className: "docx-viewer",
-             inWrapper: true, // Keep wrapper for styles
+             inWrapper: true,
              ignoreWidth: false,
              ignoreHeight: false,
              ignoreFonts: false,
              breakPages: true,
              useBase64URL: true,
+             experimental: true, // Características experimentales
+             trimXmlDeclaration: true,
           });
 
-          // Wait for images/fonts to render
-          await new Promise(r => setTimeout(r, 1500));
+          setStatusMessage("Esperando carga de recursos (fuentes e imágenes)...");
+          
+          // 4. TIMEOUT AUMENTADO para asegurar carga completa
+          await new Promise(resolve => setTimeout(resolve, 3500));
 
-          // 2. Snapshot HTML to PDF
-          // Target the internal wrapper created by docx-preview to avoid extra whitespace
+          // 5. Preparar elemento objetivo
           const targetElement = docxContainerRef.current.querySelector('.docx-wrapper') as HTMLElement || docxContainerRef.current;
           
-          // Force background white explicitly
+          // Forzar estilos de impresión
           targetElement.style.background = "white";
+          targetElement.style.padding = "0";
+          targetElement.style.margin = "0";
 
+          setStatusMessage("Capturando documento de alta resolución...");
+
+          // 6. Capturar con ALTA CALIDAD
           const canvas = await html2canvas(targetElement, {
-              scale: 2,
+              scale: 3, // Escala aumentada para mejor calidad
               useCORS: true,
+              allowTaint: false,
               backgroundColor: '#ffffff',
-              logging: false
+              logging: false,
+              imageTimeout: 15000,
+              removeContainer: false,
+              windowWidth: 800,
+              windowHeight: 1131,
           });
 
-          const imgData = canvas.toDataURL('image/jpeg', 0.95);
+          const imgData = canvas.toDataURL('image/jpeg', 0.98); // Máxima calidad
           
-          // Calculate dimensions (A4)
-          const pdf = new jsPDF('p', 'mm', 'a4');
+          setStatusMessage("Generando PDF final...");
+
+          // 7. Crear PDF con dimensiones exactas A4
+          const pdf = new jsPDF({
+              orientation: 'portrait',
+              unit: 'mm',
+              format: 'a4',
+              compress: true
+          });
+
           const pageWidth = pdf.internal.pageSize.getWidth();
           const pageHeight = pdf.internal.pageSize.getHeight();
           const canvasRatio = canvas.width / canvas.height;
           
-          // Scale image to fit PDF width
-          const imgHeight = pageWidth / canvasRatio;
+          let imgWidth = pageWidth;
+          let imgHeight = pageWidth / canvasRatio;
           
-          pdf.addImage(imgData, 'JPEG', 0, 0, pageWidth, imgHeight);
+          // 8. SOPORTE MULTI-PÁGINA AUTOMÁTICO
+          if (imgHeight > pageHeight) {
+              const pagesNeeded = Math.ceil(imgHeight / pageHeight);
+              
+              for (let i = 0; i < pagesNeeded; i++) {
+                  if (i > 0) pdf.addPage();
+                  
+                  const sourceY = i * (canvas.height / pagesNeeded);
+                  const sourceHeight = canvas.height / pagesNeeded;
+                  
+                  // Canvas temporal para cada página
+                  const tempCanvas = document.createElement('canvas');
+                  tempCanvas.width = canvas.width;
+                  tempCanvas.height = sourceHeight;
+                  const tempCtx = tempCanvas.getContext('2d');
+                  
+                  if (tempCtx) {
+                      tempCtx.drawImage(canvas, 0, sourceY, canvas.width, sourceHeight, 0, 0, canvas.width, sourceHeight);
+                      const pageImgData = tempCanvas.toDataURL('image/jpeg', 0.98);
+                      pdf.addImage(pageImgData, 'JPEG', 0, 0, pageWidth, pageHeight);
+                  }
+              }
+          } else {
+              // Una sola página
+              pdf.addImage(imgData, 'JPEG', 0, 0, imgWidth, imgHeight);
+          }
           
           const pdfBlob = pdf.output('blob');
           setPdfNoQrBlob(pdfBlob);
 
           const saveAs = (window as any).saveAs;
-          if(saveAs) saveAs(pdfBlob, `2_ENMICADO_PDF_${data.placa || 'TIV'}.pdf`);
+          if (saveAs) saveAs(pdfBlob, `2_ENMICADO_PDF_${data.placa || 'TIV'}.pdf`);
 
           setStep2Done(true);
+          setStatusMessage("✓ PDF generado exitosamente");
+          
+          // Limpiar mensaje después de 2 segundos
+          setTimeout(() => setStatusMessage(""), 2000);
 
-      } catch (e) {
+      } catch (e: any) {
           console.error(e);
-          alert("Error al generar PDF desde DOCX: " + e);
+          alert("Error al generar PDF desde DOCX: " + e.message);
+          setStatusMessage("");
       } finally {
           setProcessingStep2(false);
       }
@@ -259,14 +298,19 @@ const App: React.FC = () => {
       if (!pdfNoQrBlob) return;
       
       setProcessingStep3(true);
+      setStatusMessage("Procesando código QR...");
+      
       try {
           let finalPdfBytes;
           
           if (!data.qr_data) {
               finalPdfBytes = await pdfNoQrBlob.arrayBuffer();
-              alert("Nota: No se detectó datos QR en el origen.");
+              alert("Nota: No se detectó datos QR en el origen. PDF descargado sin QR.");
           } else {
+              setStatusMessage("Generando código QR...");
               const qrBase64 = await generateQRImageBase64(data.qr_data);
+              
+              setStatusMessage("Inyectando QR al PDF...");
               finalPdfBytes = await embedQrInPdf(pdfNoQrBlob, qrBase64);
           }
 
@@ -274,9 +318,13 @@ const App: React.FC = () => {
           const saveAs = (window as any).saveAs;
           if(saveAs) saveAs(finalBlob, `3_ENMICADO_FINAL_QR_${data.placa || 'TIV'}.pdf`);
 
-      } catch (e) {
+          setStatusMessage("✓ Proceso completado");
+          setTimeout(() => setStatusMessage(""), 2000);
+
+      } catch (e: any) {
           console.error(e);
-          alert("Error al inyectar el código QR.");
+          alert("Error al inyectar el código QR: " + e.message);
+          setStatusMessage("");
       } finally {
           setProcessingStep3(false);
       }
@@ -296,24 +344,23 @@ const App: React.FC = () => {
     setStep1Done(false);
     setStep2Done(false);
     setDocxBlob(null);
-    setManualDocxFile(null);
     setPdfNoQrBlob(null);
+    setStatusMessage("");
   };
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800 font-sans">
       
       {/* HIDDEN DOCX RENDERER CONTAINER */}
-      {/* Placed absolutely with z-index -100 to be invisible but technically "on screen" for canvas capture */}
       <div 
         id="docx-hidden-container"
         style={{ 
             position: 'absolute', 
             left: 0, 
             top: 0, 
-            width: '800px', // A4 approx width for consistent render
+            width: '800px',
             zIndex: -100,
-            opacity: 0, // Make it invisible to user but visible to DOM
+            opacity: 0,
             overflow: 'hidden',
             backgroundColor: 'white'
         }}
@@ -347,6 +394,15 @@ const App: React.FC = () => {
               <div className="flex">
                 <AlertCircle className="h-5 w-5 text-red-500 mr-2" />
                 <p className="text-sm text-red-700">{error}</p>
+              </div>
+            </div>
+          )}
+
+          {statusMessage && (
+            <div className="mb-6 bg-blue-50 border-l-4 border-blue-500 p-4 rounded shadow-sm">
+              <div className="flex items-center gap-2">
+                <Spinner />
+                <p className="text-sm text-blue-700 font-medium">{statusMessage}</p>
               </div>
             </div>
           )}
@@ -402,7 +458,7 @@ const App: React.FC = () => {
                             {loading ? (
                                 <>
                                     <Spinner />
-                                    <span className="animate-pulse">{statusMessage}</span>
+                                    <span className="animate-pulse">Analizando...</span>
                                 </>
                             ) : (
                                 <>
@@ -530,34 +586,19 @@ const App: React.FC = () => {
                                         </button>
                                     </div>
 
-                                    {/* STEP 2: PDF CONVERSION (DOCX RENDER) */}
+                                    {/* STEP 2: PDF CONVERSION AUTOMATICO */}
                                     <div className={`relative ${!step1Done ? 'opacity-50' : ''}`}>
                                         <span className={`absolute -left-[21px] top-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2 ${step2Done ? 'bg-green-100 text-green-700 border-green-500' : 'bg-white text-gray-400 border-gray-300'}`}>
                                             2
                                         </span>
                                         <div className="mb-2">
                                             <h4 className="font-bold text-gray-800">Convertir DOCX a PDF</h4>
-                                            <p className="text-xs text-gray-500">Usa el generado o sube uno modificado.</p>
+                                            <p className="text-xs text-gray-500">Usa automáticamente el archivo generado en Paso 1.</p>
                                             
-                                            {/* Manual Upload Option */}
-                                            {step1Done && (
-                                                <div className="mt-2 mb-2 flex items-center gap-2 text-xs">
-                                                    <div className="flex-1 bg-gray-50 border rounded p-1 truncate text-gray-500">
-                                                        {manualDocxFile ? manualDocxFile.name : (docxBlob ? "Usando archivo generado..." : "Falta archivo")}
-                                                    </div>
-                                                    <button 
-                                                        onClick={() => manualDocxInputRef.current?.click()}
-                                                        className="text-indigo-600 font-bold hover:underline flex items-center gap-1"
-                                                    >
-                                                        <RefreshCw className="h-3 w-3" /> Subir Otro
-                                                    </button>
-                                                    <input 
-                                                        type="file" 
-                                                        accept=".docx" 
-                                                        className="hidden" 
-                                                        ref={manualDocxInputRef} 
-                                                        onChange={handleManualDocxChange} 
-                                                    />
+                                            {step1Done && docxBlob && (
+                                                <div className="mt-2 flex items-center gap-2 text-xs bg-green-50 border border-green-200 rounded p-2">
+                                                    <CheckCircle className="h-4 w-4 text-green-600" />
+                                                    <span className="text-green-700 font-medium">Archivo DOCX listo para conversión</span>
                                                 </div>
                                             )}
                                         </div>
@@ -569,7 +610,7 @@ const App: React.FC = () => {
                                                     ? 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-indigo-300' 
                                                     : 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed'}`}
                                         >
-                                            {processingStep2 ? <Spinner /> : <span className="flex items-center gap-2"><FileDown className="h-4 w-4" /> Convertir DOCX a PDF</span>}
+                                            {processingStep2 ? <Spinner /> : <span className="flex items-center gap-2"><FileDown className="h-4 w-4" /> Convertir a PDF</span>}
                                             {step2Done && <CheckCircle className="h-5 w-5 text-green-500" />}
                                         </button>
                                     </div>
