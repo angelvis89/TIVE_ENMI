@@ -1,0 +1,5 @@
+{
+  "name": "TIV AI Scanner",
+  "description": "An AI-powered application to extract, recognize, and map vehicle data from PDF Identification Cards (TIV) using Gemini Vision.",
+  "requestFramePermissions": []
+}
